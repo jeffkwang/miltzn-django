@@ -18,3 +18,4 @@ jsonpointer==2.4
 requests==2.31.0 
 setuptools==66.0.0 
 squareup==34.0.1.20240118
+boto3==1.34.29
