@@ -28,9 +28,11 @@ router.register(r'rugs', views.RugViewSet)
 router.register(r'wallart', views.WallArtViewSet)
 
 urlpatterns = [
-    path('admin/', admin.site.urls),
+    path('admin/', admin.site.urls),    
     path('', include(router.urls)),
-
+    path('pricelist/', views.PriceListView.as_view(), name="product_price_list"),
+    path('checkout/', include("checkout.urls")),
+    path('', include("validation.urls"))
 ]
 
 urlpatterns += router.urls

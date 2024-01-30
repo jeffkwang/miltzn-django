@@ -1,6 +1,6 @@
 from django.utils.decorators import method_decorator
 from django.views.decorators.cache import cache_page
-from django.views.decorators.vary import vary_on_cookie, vary_on_headers
+from django.views.decorators.vary import vary_on_cookie
 from rest_framework.response import Response
 
 from django.shortcuts import render, get_object_or_404
@@ -110,3 +110,12 @@ class RugViewSet(viewsets.ReadOnlyModelViewSet):
         product=get_object_or_404(self.queryset, slug=slug)
         serializer=RugSerializer(product)
         return Response(serializer.data)
+
+from rest_framework.views import APIView
+
+class PriceListView(APIView):
+    @method_decorator(cache_page(60 * 60 * 2))
+    @method_decorator(vary_on_cookie)
+    def get(self, request, format=None):
+        content = list(Product.objects.all().values('slug', 'name', 'price'))
+        return Response(content)
