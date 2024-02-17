@@ -12,6 +12,7 @@ class Product(models.Model):
     stock_qty = models.IntegerField(null=True)
     tags = models.JSONField(default=list, blank=True)
     related_products = models.JSONField(default=list, blank=True)
+    collections = models.JSONField(default=list, blank=True)
     active = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 

@@ -1,17 +1,31 @@
 from django.shortcuts import render
 import json
 from django.http import HttpResponse, HttpResponseRedirect
+from django.shortcuts import get_object_or_404
 
 def get_cart_data(request):
     cart_cookie = request.COOKIES.get('cart', '[]')
     return json.loads(cart_cookie)
 
-from products.models import Product
+from django.core.cache import cache
+from miltzn.square_client import square_client
+from products.views import format_items_response
+def get_product(name):
+    # product should be cached, but in case ...
+    
+    product = cache.get(name)
+    if product is not None:
+        return product
+    
+    result = square_client.catalog.search_catalog_items(
+        body = {"text_filter": name}
+    )
 
-def get_product_by_slug(slug):
-    try:
-        return Product.objects.get(slug=slug)
-    except Product.DoesNotExist:
+    if result.is_success():
+        formatted_response = format_items_response(result.body)
+        cache.set("items_response", formatted_response, timeout=604800)
+        return formatted_response
+    elif result.is_error():
         return None
 
 def format_square_order_line_item(id, name, price, color, qty):
@@ -29,9 +43,8 @@ def format_square_order_line_item(id, name, price, color, qty):
 from miltzn.square_client import square_client
 import uuid
 import os
-from miltzn.secrets import location_id
 
-def create_square_payment(request, line_items):
+def create_square_payment(line_items):
     order_data = {
         "checkout_options": {
             "accepted_payment_methods": {
@@ -44,7 +57,7 @@ def create_square_payment(request, line_items):
         },
         "idempotency_key": str(uuid.uuid4()),
         "order": {
-            "location_id": location_id,
+            "location_id": os.getenv('LOCATION_ID'),
             "line_items": line_items,
             "taxes": [
                 {
@@ -62,7 +75,7 @@ def create_square_payment(request, line_items):
                 "scope": "ORDER"
                 }
             ],
-            "state": "OPEN",
+            "state": "DRAFT",
             "pricing_options": {
                 "auto_apply_taxes": False
             }
@@ -72,10 +85,14 @@ def create_square_payment(request, line_items):
     response = square_client.checkout.create_payment_link(body=order_data)
     return response
 
-# from .models import create_order_in_db
-import time
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
+
+def find_variant(product_variants, variation_name):
+    for variant in product_variants:
+        if variant["name"] == variation_name:
+            return variant
+    return None
 
 @csrf_exempt
 def checkout_view(request):
@@ -84,15 +101,17 @@ def checkout_view(request):
         line_items = []
 
         for item in cart_data:
-            product = get_product_by_slug(item['slug'])
+            product = get_product(item['name'])[0]
+            variation = find_variant(product['variants'], item['variation'])
             if product:
-                line_item = format_square_order_line_item(product.id, product.name, product.price, item['color'], item['qty'])
+                line_item = format_square_order_line_item(product['id']+variation['name'], product['name'], variation['price']['amount']/100, variation['name'], item['qty'])
                 line_items.append(line_item)
-        
-        square_response = create_square_payment(request, line_items)
+        print('creating square payment')
+        square_response = create_square_payment(line_items)
         if square_response.is_success():
-            checkout_url = square_response.body['payment_link']['url']  # Extract checkout URL
-            # create_order_in_db(square_response.body)
+            
+            checkout_url = square_response.body['payment_link']['url']
+
             return JsonResponse({'checkout_url': checkout_url})
         else:
             # Handle errors

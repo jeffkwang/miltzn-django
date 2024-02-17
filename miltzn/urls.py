@@ -16,23 +16,10 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path, include
-from rest_framework import routers
-
-from products import views
-
-router = routers.DefaultRouter()
-router.register(r'products', views.ProductViewSet)  
-router.register(r'pillows', views.PillowViewSet)
-router.register(r'seatcushions', views.SeatCushionViewSet)
-router.register(r'rugs', views.RugViewSet)
-router.register(r'wallart', views.WallArtViewSet)
 
 urlpatterns = [
-    path('admin/', admin.site.urls),    
-    path('', include(router.urls)),
-    path('pricelist/', views.PriceListView.as_view(), name="product_price_list"),
-    path('checkout/', include("checkout.urls")),
-    path('', include("validation.urls"))
+    path('admin/', admin.site.urls),
+    path('', include("checkout.urls")),
+    path('', include('customers.urls')),
+    path('', include('products.urls'))
 ]
-
-urlpatterns += router.urls

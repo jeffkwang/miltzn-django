@@ -1,121 +1,177 @@
-from django.utils.decorators import method_decorator
-from django.views.decorators.cache import cache_page
-from django.views.decorators.vary import vary_on_cookie
-from rest_framework.response import Response
+# Square Catalog Views and Helpers
 
-from django.shortcuts import render, get_object_or_404
-from products.models import Product, Pillow, Rug, WallArt, SeatCushion
-from rest_framework import permissions, viewsets
+def find_category_by_id(categories, category_id):
+    for category in categories:
+        if category['id'] == category_id:
+            return category['name'], category['href']
+    return None, None
 
-from products.serializers import ProductSerializer, PillowSerializer, RugSerializer, WallArtSerializer, SeatCushionSerializer
+def splitDescription(description):
+    sections = description.split("\n\n")
+    description = ""
+    highlights = []
+    details = ""
 
-class ProductViewSet(viewsets.ReadOnlyModelViewSet):
-    """
-    API endpoint that allows products to be viewed.
-    """
+    for section in sections:
+        if "Highlights" in section:
+            highlights = section.replace("Highlights", "").strip()
+            highlights = section.replace("Highlights", "").strip().split("\n")
+        elif "Details" in section:
+            details = section.replace("Details", "").strip()
+        else:
+            # Assume the section is part of the description
+            description += section.strip()
 
-    queryset = Product.objects.all().order_by('-created_at')  # Specify the queryset attribute
-    lookup_field = 'slug'
+    return [description, highlights, details]
 
-    # With cookie: cache requested url for each user for 2 hours
-    @method_decorator(cache_page(60 * 60 * 2))
-    @method_decorator(vary_on_cookie)
-    def list(self, request):
-        serializer_class = ProductSerializer(self.queryset, many=True)
-        return Response(serializer_class.data)
+def getImageUrls(imageID):
+    result = square_client.catalog.retrieve_catalog_object(
+          object_id = imageID
+    )
+
+    if result.is_success():
+        return result.body['object']['image_data']['url']
+    elif result.is_error():
+        print(result.errors)
+
+def format_items_response(response):
+    '''
+    Filters the response text as a dictionary with the following fields:
+    - id : item ID gathered from Square catalog
+    - name : name of the product
+    - description : description of the product
+    - highlights : highlights of the product
+    - details : details of the product
+    - href : product url path
+    - src : the first image provided by the item
+    - alt : the item's name (for ease of programming)
+    - price : the range of the price of the item, based off all of its variants
+    - category_name : the category that the product belongs to
+    - category_href : the path of the category
+    - variants : list of variations (name, price, inStock, image_urls) as Dict objects
+    '''
+
+    formatted_items = []
+    categoryDict = getCategoriesFromSquare()
+
+    firstItem = next(iter(response.keys()))
+    itemType = str(response[firstItem][0]["type"]).lower()
+    item_data = itemType + "_data"
+
+    if itemType == "item":
+        for item in response[firstItem]:
+            item_id = item.get('id', '')
+            item_name = item[item_data].get('name', '')
+            item_image_uris = item[item_data].get('ecom_image_uris', [])
+            item_image_src = item_image_uris[0] if item_image_uris else ''  
+            item_image_alt = item[item_data].get('name', '')
+            item_href = item[item_data]['ecom_seo_data'].get('permalink', '') 
+
+            item_description = item[item_data].get('description', '')
+            description, highlights, details = splitDescription(item_description)
+
+            variation_prices = [variation['item_variation_data']['price_money']['amount'] / 100 for variation in item[item_data]['variations']]
+            price_range = f"${min(variation_prices):.2f} - ${max(variation_prices):.2f}"
+            variation_data = item[item_data]['variations']
+            
+            variations = [{ "name": variant["item_variation_data"]["name"][0], 
+                           "price": variant["item_variation_data"]["price_money"], 
+                           "inStock": variant["item_variation_data"]["sellable"],
+                           "image_urls": [getImageUrls(imageID) for imageID in variant["item_variation_data"]["image_ids"]] } for variant in variation_data]
+
+            category_id = item[item_data]['reporting_category']['id']
+            category_name, category_href = find_category_by_id(categoryDict, category_id)
+
+            formatted_items.append({
+                'id': item_id,
+                'name': item_name,
+                'description': description,
+                'highlights': highlights,
+                'details': details,
+                'href': item_href,
+                'src': item_image_src,
+                'alt': item_image_alt,
+                'price': price_range,
+                'category_name': category_name,
+                'category_href': category_href,
+                'variants': variations,
+            })
+
+    return formatted_items
+
+from miltzn.square_client import square_client 
+from django.core.cache import cache
+from django.http import JsonResponse
+from rest_framework.decorators import api_view
+
+@api_view(['GET'])
+def getCatalogItemsFromSquare(request):
+
+    items_response = cache.get("items_response")
+    if items_response is not None:
+        return JsonResponse({'items': items_response})
     
-    @method_decorator(cache_page(60 * 60 * 2))
-    @method_decorator(vary_on_cookie)
-    def retrieve(self, request, slug=None):
-        product = get_object_or_404(self.queryset, slug=slug)
-        serializer = ProductSerializer(product)
-        return Response(serializer.data)
-
-class PillowViewSet(viewsets.ReadOnlyModelViewSet):
-    """
-    API endpoint that allows pillows to be viewed.
-    """
-    queryset = Pillow.objects.all().order_by('-created_at')
-    lookup_field = 'slug'
-
-    @method_decorator(cache_page(60 * 60 * 2))
-    @method_decorator(vary_on_cookie)
-    def list(self, request):
-        serializer=PillowSerializer(self.queryset, many=True)
-        return Response(serializer.data)
+    result = square_client.catalog.search_catalog_items(
+        body = {}
+    )
     
-    @method_decorator(cache_page(60 * 60 * 2))
-    @method_decorator(vary_on_cookie)
-    def retrieve(self, request, slug=None):
-        product=get_object_or_404(self.queryset, slug=slug)
-        serializer=PillowSerializer(product)
-        return Response(serializer.data)
+    if result.is_success():
+        
+        formatted_response = format_items_response(result.body)
+        cache.set("items_response", formatted_response, timeout=604800)
+        return JsonResponse({'items': formatted_response})
+    elif result.is_error():
+        return JsonResponse({'error': result.errors}, status=400)
 
-class WallArtViewSet(viewsets.ReadOnlyModelViewSet):
-    """
-    API endpoint that allows wall art to be viewed.
-    """
-    queryset = WallArt.objects.all().order_by('-created_at')
-    lookup_field = 'slug'
+def getCategoriesFromSquare():
+    # check if cache table contains categories key
+    #   if not, query Square to retrieve the category data
+    #   save the category data to the cache table
+    #   return the category data
+    # if cache table contains categories key
+    #   return the category data
 
-    @method_decorator(cache_page(60 * 60 * 2))
-    @method_decorator(vary_on_cookie)
-    def list(self, request):
-        serializer=WallArtSerializer(self.queryset, many=True)
-        return Response(serializer.data)
+    categories_data = cache.get("categories_data")
+    if categories_data is not None:
+        return categories_data
     
-    @method_decorator(cache_page(60 * 60 * 2))
-    @method_decorator(vary_on_cookie)
-    def retrieve(self, request, slug=None):
-        product=get_object_or_404(self.queryset, slug=slug)
-        serializer=WallArtSerializer(product)
-        return Response(serializer.data)
+    result = square_client.catalog.search_catalog_objects(
+    body = {
+        "object_types": [
+        "CATEGORY"
+        ]
+    }
+    )
 
-class SeatCushionViewSet(viewsets.ReadOnlyModelViewSet):
-    """
-    API endpoint that allows seat cushions to be viewed.
-    """
-    queryset = SeatCushion.objects.all().order_by('-created_at')
-    lookup_field = 'slug'
+    if result.is_success():
+        raw_categories = result.body['objects']
+        categories_data = [{
+            'id': category['id'],
+            'name': category['category_data']['name'],
+            'href': category['category_data']['ecom_seo_data'].get('permalink'),
+        } for category in raw_categories]
 
-    @method_decorator(cache_page(60 * 60 * 2))
-    @method_decorator(vary_on_cookie)
-    def list(self, request):
-        serializer=SeatCushionSerializer(self.queryset, many=True)
-        return Response(serializer.data)
+        cache.set("categories_data", categories_data, timeout=3600)
+        return categories_data
+    elif result.is_error():
+        return []
+
+def getItemDetails(request, name):
+
+    items_response = cache.get(name)
+    if items_response is not None:
+        return JsonResponse({'items': items_response})
+
+    result = square_client.catalog.search_catalog_items(
+        body = {
+            "text_filter": name
+        }
+    )
     
-    @method_decorator(cache_page(60 * 60 * 2))
-    @method_decorator(vary_on_cookie)
-    def retrieve(self, request, slug=None):
-        product=get_object_or_404(self.queryset, slug=slug)
-        serializer=SeatCushionSerializer(product)
-        return Response(serializer.data)
 
-class RugViewSet(viewsets.ReadOnlyModelViewSet):
-    """
-    API endpoint that allows rugs to be viewed.
-    """
-    queryset = Rug.objects.all().order_by('-created_at')
-    lookup_field = 'slug'
+    if result.is_success():
+        cache.set(name, format_items_response(result.body), timeout=604800)
 
-    @method_decorator(cache_page(60 * 60 * 2))
-    @method_decorator(vary_on_cookie)
-    def list(self, request):
-        serializer=RugSerializer(self.queryset, many=True)
-        return Response(serializer.data)
-    
-    @method_decorator(cache_page(60 * 60 * 2))
-    @method_decorator(vary_on_cookie)
-    def retrieve(self, request, slug=None):
-        product=get_object_or_404(self.queryset, slug=slug)
-        serializer=RugSerializer(product)
-        return Response(serializer.data)
-
-from rest_framework.views import APIView
-
-class PriceListView(APIView):
-    @method_decorator(cache_page(60 * 60 * 2))
-    @method_decorator(vary_on_cookie)
-    def get(self, request, format=None):
-        content = list(Product.objects.all().values('slug', 'name', 'price'))
-        return Response(content)
+        return JsonResponse({'items': format_items_response(result.body)})
+    elif result.is_error():
+        return JsonResponse({'error': result.errors}, status=400)

@@ -28,4 +28,4 @@ square_api_token = secrets['SQUARE_ACCESS_TOKEN']
 location_id = secrets['LOCATION_ID']
 
 secrets = get_secret('DJANGO')
-key = secrets['secret key']
+key = secrets['DJANGO_SECRET_KEY']
